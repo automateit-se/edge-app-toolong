@@ -1,0 +1,6 @@
+{
+  "name": "För länge",
+  "category": "notification",
+  "short_description": "Varnar när något varit aktivt för länge, till exempel vatten som rinner eller en kylskåpsdörr som står öppen, i steg från start: ljud, aviseringar och styrning.",
+  "tags": ["notification", "timer", "water", "door", "alarm"]
+}
