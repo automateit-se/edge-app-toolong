@@ -1,0 +1,10 @@
+{
+  "name": "Kyl och frys",
+  "group": "fridge-freezer",
+  "debounce_s": 10,
+  "sound_default": "iotopen/door-open.mp3",
+  "steps": [
+    { "step_after_min": 5, "step_sound": true, "step_repeat_every_min": 2, "step_max_repeats": 3 },
+    { "step_after_min": 10, "step_outputs": [1003], "step_recipient_group": "staff", "step_repeat_every_min": 15 }
+  ]
+}

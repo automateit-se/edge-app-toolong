@@ -1,0 +1,10 @@
+{
+  "name": "Fönster och altandörr",
+  "group": "windows",
+  "debounce_s": 30,
+  "sound_default": "iotopen/window-open.mp3",
+  "steps": [
+    { "step_after_min": 60, "step_sound": true },
+    { "step_after_min": 65, "step_outputs": [1003], "step_recipient_group": "staff" }
+  ]
+}
