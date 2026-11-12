@@ -75,8 +75,12 @@ Without a speaker, sounds are skipped and logged once; notifications and command
 ## Behaviour
 
 - **Commands** are sent once per episode and never undone: the app does not open the valve again.
-- **Restart**: the clocks go on from the values' own timestamps (`lynx.getStatus`). Steps passed during the
-  restart run once; a sound more than an hour late is skipped, a command is still sent.
+- **Restart**: each clock is saved retained on the edge client's local broker
+  (`obj/toolong/<group>/<function id>/clock`: value = time zero, `msg` = the steps that have run), so a restart
+  goes on where it was, also without internet and although sensors such as KNX do not resend their values. With
+  internet, the latest values in IoT Open (`lynx.getStatus`) are read too: a function that became inactive during
+  the restart is reset. Steps passed during the restart run once and steps that had run are not repeated; a sound
+  more than an hour late is skipped, a command is still sent.
 - **No internet**: sounds and commands work locally. Notifications that fail are queued and retried every minute,
   and marked `late` after an hour.
 - **Status**: `obj/toolong/<group>/<function id>/minutes` (minutes, `msg` = `step n/m`) and

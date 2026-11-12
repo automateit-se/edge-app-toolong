@@ -17,7 +17,7 @@
 --
 -- Not yet: an acknowledge button. Sounds go straight to the speaker.
 
-local VERSION = "0.2.0"
+local VERSION = "0.3.0"
 local TICK_S = 5
 local LATE_S = 3600 -- a notification queued longer than this is marked late; a missed sound this old is skipped
 local RETRY_S = 60
@@ -181,9 +181,37 @@ function Monitor:value(topic, value, ts, now)
       t.inactive_since = nil
     elseif t.since ~= nil and t.inactive_since == nil then
       t.inactive_since = ts or now
+    elseif t.since == nil then
+      t.seen_inactive = true -- a later restored clock must not start it again
     end
   end
   return changed
+end
+
+--- A clock saved before a restart: since (UNIX time) and the steps that had run. Ignored when the function has
+--- been seen inactive since the start, or when the clock already runs from another time.
+function Monitor:restore(id, since, fired)
+  local t = self.tracks[id]
+  if t == nil or not since or since <= 0 or t.seen_inactive then return false end
+  if t.since ~= nil and math.abs(t.since - since) > 2 then return false end
+  t.since = t.since or since
+  for _, n in ipairs(fired or {}) do t.fired[n] = true end
+  for _, st in ipairs(self.settings.steps) do
+    if t.fired[st.n] and st.repeat_s > 0 then
+      local nxt = t.since + st.after_s + st.repeat_s
+      t.next_repeat[st.n] = nxt
+    end
+  end
+  return true
+end
+
+--- since and the steps that have run, for saving.
+function Monitor:snapshot(id)
+  local t = self.tracks[id]
+  if t == nil or t.since == nil then return 0, {} end
+  local fired = {}
+  for _, st in ipairs(self.settings.steps) do if t.fired[st.n] then fired[#fired + 1] = st.n end end
+  return math.floor(t.since), fired
 end
 
 function Monitor:active_list(now)
@@ -358,6 +386,28 @@ end
 
 local function status_base() return "obj/toolong/" .. state.settings.group end
 
+--- The clock of a function, retained on the local broker, so a restart of the edge client (also without
+--- internet) goes on where it was: value = time zero (0 = not active), msg = the steps that have run.
+local function clock_topic(id) return status_base() .. "/" .. tostring(id) .. "/clock" end
+
+local function save_clock(id)
+  local since, fired = state.monitor:snapshot(id)
+  local nums = {}
+  for _, n in ipairs(fired) do nums[#nums + 1] = tostring(n) end
+  mq:pub(clock_topic(id), json:encode({ value = since, msg = "fired=" .. table.concat(nums, ","), timestamp = now() }), true, 1)
+end
+
+local function on_clock(topic, payload)
+  local id = tonumber(topic:match("/(%d+)/clock$"))
+  local ok, data = pcall(json.decode, json, payload)
+  if not id or not ok or type(data) ~= "table" then return end
+  local fired = {}
+  for n in tostring(data.msg or ""):gmatch("%d+") do fired[#fired + 1] = tonumber(n) end
+  if state.monitor:restore(id, tonumber(data.value), fired) then
+    log.i("%s: clock restored from before the restart", state.monitor.tracks[id].label)
+  end
+end
+
 local function publish_status()
   local t = now()
   for _, s in ipairs(state.monitor:status(t)) do
@@ -421,9 +471,11 @@ end
 local function run(a)
   if a.kind == "reset" then
     log.i("%s: back to normal, clock reset", a.label)
+    save_clock(a.id)
     return
   end
   local st = a.step
+  if a.kind == "step" then save_clock(a.id) end
   if a.kind == "step" and st.control then
     publish(st.control.topic, st.control.value)
     log.i("%s: step %d, sent %s to %s", a.label, st.n, tostring(st.control.value), st.control.topic)
@@ -473,7 +525,10 @@ local function on_message(topic, payload)
   if topic == state.mode_topic then set_mode(data.value) end
   if state.monitor and state.monitor.by_topic[topic] then
     local changed = state.monitor:value(topic, data.value, tonumber(data.timestamp), now())
-    for _, id in ipairs(changed) do log.i("%s: active, clock started", state.monitor.tracks[id].label) end
+    for _, id in ipairs(changed) do
+      log.i("%s: active, clock started", state.monitor.tracks[id].label)
+      save_clock(id)
+    end
   end
   check_verifications(false)
 end
@@ -482,7 +537,7 @@ local subscribed = {}
 
 local function subscribe(topics)
   for topic in pairs(subscribed) do
-    mq:unbind(topic, on_message)
+    mq:unbind(topic, topic:match("/clock$") and on_clock or on_message)
   end
   subscribed = {}
   for _, topic in ipairs(topics) do
@@ -534,6 +589,14 @@ local function refresh()
     end
   end
   subscribe(topics)
+  for id in pairs(state.monitor.tracks) do
+    local ct = clock_topic(id)
+    if not subscribed[ct] then
+      subscribed[ct] = true
+      mq:sub(ct, 1)
+      mq:bind(ct, on_clock)
+    end
+  end
   return #mine
 end
 

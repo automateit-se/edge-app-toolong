@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.3.0
+
+- A restart of the edge client no longer makes the instances silent until the next value: each clock is saved
+  retained on the local broker (`obj/toolong/<group>/<function id>/clock`) with the steps that have run, and
+  restored at start, also without internet. With internet, IoT Open's latest values still win, so a function that
+  became inactive during the restart is reset. Steps that had run are not repeated.
+
 ## 0.2.0
 
 - System modes: `active_modes` (keys, e.g. `away, vacation`) limits an instance to some of the installation's modes
