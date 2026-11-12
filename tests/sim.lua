@@ -64,7 +64,7 @@ end
 --- Loads app.lua in a simulated edge client. opts: cfg, functions, devices, status (lynx.getStatus answer),
 --- notify_fails (function returning true while notifications fail).
 function S.load_app(opts)
-  local sim = { clock = S.T0, timers = {}, published = {}, notified = {}, logs = {}, handlers = {}, subs = {} }
+  local sim = { retained = opts.retained or {}, clock = opts.clock or S.T0, timers = {}, published = {}, notified = {}, logs = {}, handlers = {}, subs = {} }
   local functions = opts.functions or { S.water(101, "obj/knx/0/1/10") }
   local all_functions = { S.PLAY }
   for _, f in ipairs(opts.extra_functions or {}) do all_functions[#all_functions + 1] = f end
@@ -87,7 +87,11 @@ function S.load_app(opts)
       for _, d in ipairs(opts.devices or { S.SPEAKER, S.RECIPIENTS }) do if match(d, filter) then out[#out + 1] = d end end
       return out
     end,
-    getStatus = function() if opts.status then return opts.status end return {} end,
+    getStatus = function()
+      if opts.offline then error("no connection") end
+      if opts.status then return opts.status end
+      return {}
+    end,
     notify = function(id, body)
       if opts.notify_fails and opts.notify_fails(sim) then error("no connection") end
       sim.notified[#sim.notified + 1] = { id = id, body = body, at = sim.clock }
@@ -95,9 +99,15 @@ function S.load_app(opts)
   }
   local mq = {}
   function mq:sub(topic) sim.subs[topic] = true end
-  function mq:bind(topic, fn) sim.handlers[topic] = fn end
+  function mq:bind(topic, fn)
+    sim.handlers[topic] = fn
+    if sim.retained[topic] then fn(topic, sim.retained[topic]) end -- the broker sends a retained message at once
+  end
   function mq:unbind(topic) sim.handlers[topic] = nil end
-  function mq:pub(topic, payload) sim.published[#sim.published + 1] = { topic = topic, payload = payload, at = sim.clock } end
+  function mq:pub(topic, payload, retain)
+    sim.published[#sim.published + 1] = { topic = topic, payload = payload, at = sim.clock }
+    if retain then sim.retained[topic] = payload end
+  end
   local timer = {}
   function timer:after(secs, fn)
     local t = { at = sim.clock + secs, fn = fn }
