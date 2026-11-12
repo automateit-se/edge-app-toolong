@@ -337,7 +337,7 @@ check("no group: nothing is watched", function()
 end)
 
 check("the code returns nothing in the edge client", function()
-  local env = setmetatable({ cfg = {}, app = { id = 1 }, log = { i = print, w = print, e = print }, json = { null = {} } }, { __index = _G })
+  local env = setmetatable({ cfg = {}, app = { id = 1 }, log = { i = print, e = print }, json = { null = {} } }, { __index = _G })
   local chunk = assert(loadfile("app.lua", "t", env))
   eq(select("#", chunk()), 0, "returned values")
 end)
