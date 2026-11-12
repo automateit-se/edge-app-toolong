@@ -222,6 +222,52 @@ check("recipients from several devices are merged, a step without a group gets n
   eq(M.recipients({ RECIPIENTS }, "night").recipients_email, nil, "unknown group")
 end)
 
+-- ---- the installation's mode ------------------------------------------------------------------------------------
+
+check("steps wait while the mode is not in active_modes, the clock goes on", function()
+  local _, env, sim = load_app({ extra_functions = { S.MODE }, cfg = config({ active_modes = "away, vacation" }) })
+  env.onStart()
+  sim.value("obj/mode/default", 0)          -- home
+  sim.value(COLD, 1)
+  sim.advance(15 * 60)
+  eq(#sim.notified, 0, "nothing while home")
+  sim.value("obj/mode/default", 1)          -- away
+  sim.advance(5)
+  local n = sim.to(1001)
+  eq(#n, 1, "step 1 at once, from the right time")
+  eq(n[1].body.minutes, 15, "minutes since time zero")
+  eq(n[1].body.mode, "away", "mode in the payload")
+  sim.advance(5 * 60)
+  eq(sim.pubs(VALVE)[1].value, 1, "step 2 at 20 min from time zero")
+end)
+
+check("a mode that cannot be found: steps run, with a warning", function()
+  local _, env, sim = load_app({ cfg = config({ active_modes = "away" }) })
+  env.onStart()
+  sim.value(COLD, 1)
+  sim.advance(10 * 60 + 5)
+  eq(#sim.to(1001), 1, "fail safe: the step runs")
+  local warned = false
+  for _, l in ipairs(sim.logs) do if l:find("no mode function", 1, true) then warned = true end end
+  assert(warned, "warning")
+end)
+
+check("a key that is not one of the installation's modes is reported", function()
+  local _, env, sim = load_app({ extra_functions = { S.MODE }, cfg = config({ active_modes = "armed" }) })
+  env.onStart()
+  local warned = false
+  for _, l in ipairs(sim.logs) do if l:find("armed is not one of", 1, true) then warned = true end end
+  assert(warned, "warning")
+end)
+
+check("the mode after a restart comes from IoT Open when the broker has none", function()
+  local _, env, sim = load_app({ extra_functions = { S.MODE }, cfg = config({ active_modes = "away" }),
+    status = { { topic = "obj/mode/default", value = 0 }, { topic = COLD, value = 1, timestamp = S.T0 - 12 * 60 } } })
+  env.onStart()
+  sim.advance(10)
+  eq(#sim.notified, 0, "home: paused although 12 min have passed")
+end)
+
 -- ---- status and lifecycle -----------------------------------------------------------------------------------------
 
 check("status: minutes and step per function, number of active", function()

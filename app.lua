@@ -11,9 +11,13 @@
 -- When the function has been back to inactive for debounce_s seconds, the clock is reset. Commands are never
 -- repeated and never undone by the app.
 --
--- Version 0.1: no system modes and no acknowledge button yet (planned for 0.2). Sounds go straight to the speaker.
+-- System mode: an instance can be limited to some states of the installation's mode (the Mode app, a function of
+-- type "mode"), for example active_modes = away, vacation. In other modes no step runs, but the clock goes on, so a
+-- change of mode in the middle of an episode takes it from the right time. Without a mode, steps always run.
+--
+-- Not yet: an acknowledge button. Sounds go straight to the speaker.
 
-local VERSION = "0.1.0"
+local VERSION = "0.2.0"
 local TICK_S = 5
 local LATE_S = 3600 -- a notification queued longer than this is marked late; a missed sound this old is skipped
 local RETRY_S = 60
@@ -75,8 +79,11 @@ function M.settings(c)
     debounce_s = math.max(0, num(c.debounce_s, 10)),
     sound_default = str(c.sound_default),
     player_device = tonumber(c.player_device) and math.floor(tonumber(c.player_device)) or nil,
+    mode_name = str(c.mode_name) ~= "" and str(c.mode_name):lower() or "default",
+    active_modes = {},
     steps = {},
   }
+  for key in str(c.active_modes):lower():gmatch("[^,%s;]+") do s.active_modes[#s.active_modes + 1] = key end
   for _, st in ipairs(type(c.steps) == "table" and c.steps or {}) do
     if type(st) == "table" then
       local after = num(st.step_after_min, 0)
@@ -210,7 +217,8 @@ function Monitor:payload(id, t, st, now, rep)
 end
 
 --- Moves every clock forward to now. Returns the actions: { kind = "reset" | "step" | "repeat", id, step, ... }.
-function Monitor:tick(now)
+--- With paused (a mode where the instance does not apply) no step or repeat runs; resets still do.
+function Monitor:tick(now, paused)
   local actions = {}
   local ids_sorted = {}
   for id in pairs(self.tracks) do ids_sorted[#ids_sorted + 1] = id end
@@ -220,7 +228,7 @@ function Monitor:tick(now)
     if t.since and t.inactive_since and now - t.inactive_since >= self.settings.debounce_s then
       reset(t)
       actions[#actions + 1] = { kind = "reset", id = id, label = t.label }
-    elseif t.since then
+    elseif t.since and not paused then
       local elapsed = now - t.since
       for _, st in ipairs(self.settings.steps) do
         if not t.fired[st.n] and elapsed >= st.after_s then
@@ -266,6 +274,26 @@ function Monitor:status(now)
 end
 
 M.Monitor = Monitor
+
+-- ---- the installation's mode ----------------------------------------------------------------------------------
+
+--- States from mode.states ("0:home:Hemma,1:away:Borta"): value -> key.
+function M.mode_states(text)
+  local out = {}
+  for part in tostring(text or ""):gmatch("[^,]+") do
+    local v, key = part:match("^%s*(%d+):([%w_%-]+)")
+    if v then out[tonumber(v)] = key end
+  end
+  return out
+end
+
+--- true when the instance applies in the current mode: no active_modes set, or the mode is unknown (fail safe:
+--- better a warning too many than a water leak nobody hears about), or the current key is in the list.
+function M.mode_ok(settings, key)
+  if #settings.active_modes == 0 or key == nil then return true end
+  for _, k in ipairs(settings.active_modes) do if k == key then return true end end
+  return false
+end
 
 -- ---- recipients and speakers -----------------------------------------------------------------------------------
 
@@ -313,7 +341,8 @@ end
 
 -- ---- edge client glue ----------------------------------------------------------------------------------------------
 
-local state = { monitor = nil, settings = nil, devices = {}, player = nil, verify = {}, queue = {}, warned = {} }
+local state = { monitor = nil, settings = nil, devices = {}, player = nil, verify = {}, queue = {}, warned = {},
+  mode_topic = nil, mode_states = {}, mode_key = nil }
 
 local function now() return os.time() end
 
@@ -366,6 +395,7 @@ local function notify(st, payload)
   local full = {}
   for k, v in pairs(payload) do full[k] = v end
   for k, v in pairs(M.recipients(state.devices, st.recipient_group)) do full[k] = v end
+  full.mode = state.mode_key
   for _, output in ipairs(st.outputs) do send(output, full) end
 end
 
@@ -428,10 +458,19 @@ local function check_verifications(force)
   state.verify = keep
 end
 
+local function set_mode(value)
+  local key = state.mode_states[tonumber(value)]
+  if key ~= state.mode_key then
+    state.mode_key = key
+    log.i("mode %s: %s", tostring(key), M.mode_ok(state.settings, key) and "steps run" or "steps paused")
+  end
+end
+
 local function on_message(topic, payload)
   local ok, data = pcall(json.decode, json, payload)
   if not ok or type(data) ~= "table" then return end
   last_values[topic] = data.value
+  if topic == state.mode_topic then set_mode(data.value) end
   if state.monitor and state.monitor.by_topic[topic] then
     local changed = state.monitor:value(topic, data.value, tonumber(data.timestamp), now())
     for _, id in ipairs(changed) do log.i("%s: active, clock started", state.monitor.tracks[id].label) end
@@ -475,6 +514,25 @@ local function refresh()
   state.player = M.player_topic(state.devices, lynx.getFunctions({ ["ha.part"] = "play" }) or {}, state.settings.player_device)
   local topics = state.monitor:topics()
   for _, t in ipairs(verify_topics()) do topics[#topics + 1] = t end
+  state.mode_topic, state.mode_states = nil, {}
+  if #state.settings.active_modes > 0 then
+    for _, fn in ipairs(lynx.getFunctions({ ["mode.name"] = state.settings.mode_name }) or {}) do
+      if fn.type == "mode" and fn.meta and fn.meta.topic_read then
+        state.mode_topic = fn.meta.topic_read
+        state.mode_states = M.mode_states(fn.meta["mode.states"])
+        topics[#topics + 1] = state.mode_topic
+        local known = {}
+        for _, k in pairs(state.mode_states) do known[k] = true end
+        for _, k in ipairs(state.settings.active_modes) do
+          if not known[k] then warn_once("mode_key_" .. k, "mode %s is not one of the installation's modes", k) end
+        end
+        break
+      end
+    end
+    if state.mode_topic == nil then
+      warn_once("no_mode", "no mode function (type mode, mode.name = %s): steps always run", state.settings.mode_name)
+    end
+  end
   subscribe(topics)
   return #mine
 end
@@ -483,6 +541,7 @@ end
 --- on from the value's own timestamp. Without internet the clocks start with the next value instead.
 local function catch_up()
   local topics = state.monitor:topics()
+  if state.mode_topic then topics[#topics + 1] = state.mode_topic end
   if #topics == 0 then return end
   local ok, statuses = pcall(lynx.getStatus, topics)
   if not ok or type(statuses) ~= "table" then
@@ -492,7 +551,11 @@ local function catch_up()
   for _, s in ipairs(statuses) do
     if type(s) == "table" and s.topic then
       local topic = tostring(s.topic):gsub("^%d+/", "")
-      state.monitor:value(topic, s.value, tonumber(s.timestamp), now())
+      if topic == state.mode_topic then
+        if state.mode_key == nil then set_mode(s.value) end
+      else
+        state.monitor:value(topic, s.value, tonumber(s.timestamp), now())
+      end
     end
   end
 end
@@ -500,7 +563,8 @@ end
 local function tick()
   timer:after(TICK_S, tick)
   local ok, err = pcall(function()
-    for _, a in ipairs(state.monitor:tick(now())) do run(a) end
+    local paused = not M.mode_ok(state.settings, state.mode_key)
+    for _, a in ipairs(state.monitor:tick(now(), paused)) do run(a) end
     check_verifications(false)
   end)
   if not ok then log.e("tick: %s", tostring(err)) end

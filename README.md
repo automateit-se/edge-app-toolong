@@ -25,6 +25,8 @@ Technical names (metadata keys, payload, topics) are in English; the settings fo
 | Grupp (tagg) | `group` | functions with `toolong.group` = this are watched |
 | Värde som betyder aktiv | `active_value` | empty: the function's `state_open` / `state_on` / `state_true`, otherwise `1` |
 | Avstudsning (sekunder) | `debounce_s` | a shorter return to inactive does not reset the clock (default 10) |
+| Gäller i lägena | `active_modes` | keys of the installation's modes, e.g. `away, vacation`; empty = always |
+| Vilket läge | `mode_name` | only with several modes, default `default` |
 | Steg | `steps` | one row per step, see below |
 | Standardljud | `sound_default` | sound file when the function has no `toolong.sound` |
 | Högtalare | `player_device` | only when there are several speakers (devices of type `audio`) |
@@ -54,6 +56,7 @@ A step:
 | `active`, `active_count` | every active function of the instance: `[{"label":...,"minutes":...}]` |
 | `recipients_email`, `recipients_sms` | the step's group from the Recipients app |
 | `late` | `true` when the notification waited more than an hour (no internet) |
+| `mode` | the installation's mode key when the step ran, e.g. `away` |
 
 Template examples:
 
@@ -79,7 +82,16 @@ Without a speaker, sounds are skipped and logged once; notifications and command
 - **Status**: `obj/toolong/<group>/<function id>/minutes` (minutes, `msg` = `step n/m`) and
   `obj/toolong/<group>/active` (number active, `msg` = their labels), every minute.
 
-Planned for 0.2: system modes (home / away) and an acknowledge button.
+## Modes
+
+With `active_modes`, an instance applies only in some of the installation's modes (the
+[Mode](https://github.com/automateit-se/edge-app-mode) app, a function of type `mode`): for example door alarms only
+`away` and `vacation`. In other modes no step runs, but the clock goes on, so a change of mode in the middle of an
+episode takes it from the right time: the door that has been open 15 minutes when the mode becomes `away` gets its
+10-minute step at once. If the mode function cannot be found or has no value yet, the steps run (better a warning
+too many), and a warning is logged.
+
+Planned: an acknowledge button.
 
 ## Tests
 

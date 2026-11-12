@@ -67,6 +67,7 @@ function S.load_app(opts)
   local sim = { clock = S.T0, timers = {}, published = {}, notified = {}, logs = {}, handlers = {}, subs = {} }
   local functions = opts.functions or { S.water(101, "obj/knx/0/1/10") }
   local all_functions = { S.PLAY }
+  for _, f in ipairs(opts.extra_functions or {}) do all_functions[#all_functions + 1] = f end
   for _, f in ipairs(functions) do all_functions[#all_functions + 1] = f end
   local function match(item, filter)
     for k, v in pairs(filter or {}) do
@@ -146,6 +147,7 @@ function S.load_app(opts)
   return M, env, sim
 end
 
+S.MODE = { id = 950, type = "mode", meta = { name = "Läge", topic_read = "obj/mode/default", topic_write = "set/obj/mode/default", ["mode.name"] = "default", ["mode.states"] = "0:home:Hemma,1:away:Borta,2:vacation:Semester" } }
 S.COLD = "obj/knx/0/1/10"
 S.PLAYER = "set/obj/ha/media_player/speaker/play"
 S.VALVE = "set/obj/knx/0/1/40"

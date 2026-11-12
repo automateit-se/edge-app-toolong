@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.0
+
+- System modes: `active_modes` (keys, e.g. `away, vacation`) limits an instance to some of the installation's modes
+  from the [Mode](https://github.com/automateit-se/edge-app-mode) app. In other modes the steps wait while the clock
+  goes on. Without a mode function the steps always run, with a warning. The payload has `mode`.
+
 ## 0.1.0
 
 - First version. One instance watches every function with metadata `toolong.group`, each with a clock of its own

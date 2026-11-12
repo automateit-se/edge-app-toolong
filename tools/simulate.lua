@@ -68,3 +68,17 @@ run("Kyl och frys: kylskåpet står öppet, påminnelse var 2:a min", {
   sim.value("obj/knx/0/1/24", 0)
   wait(30)
 end)
+
+run("Dörrlarm bara i läget Borta: dörren står öppen när läget byts", {
+  extra_functions = { S.MODE },
+  functions = { S.water(301, "obj/knx/0/1/22", { name = "Dörr Altan", ["toolong.label"] = "altandörren", ["toolong.group"] = "kitchen-water" }) },
+  cfg = S.config({ name = "Dörrar när ingen är hemma", active_modes = "away, vacation", steps = {
+    { step_after_min = 10, step_outputs = { 1003 }, step_recipient_group = "staff" },
+  } }),
+}, function(sim, wait)
+  sim.value("obj/mode/default", 0)
+  sim.value("obj/knx/0/1/22", 1)
+  wait(15 * 60)
+  sim.value("obj/mode/default", 1)
+  wait(30)
+end)
