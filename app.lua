@@ -56,7 +56,7 @@ local function ids(v)
   local out = {}
   if type(v) == "table" then
     for k, x in pairs(v) do
-      local id = math.type and math.type(k) == "integer" and tonumber(x) or tonumber(k) or tonumber(x)
+      local id = type(k) == "number" and tonumber(x) or tonumber(k) or tonumber(x)
       if id then out[#out + 1] = math.floor(id) end
     end
   elseif tonumber(v) then
