@@ -121,7 +121,7 @@ function S.load_app(opts)
     cfg = opts.cfg or S.config(),
     app = { id = 5, installation_id = 1001, name = "För länge" },
     json = S.json, lynx = lynx, mq = mq, timer = timer, os = os_fake,
-    log = { i = logger("I"), w = logger("W"), e = logger("E"), d = logger("D") },
+    log = { i = logger("I"), e = logger("E"), d = logger("D") },
   }, { __index = _G })
   local M = assert(loadfile(S.root .. "app.lua", "t", env))()
 

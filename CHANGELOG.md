@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.3.1
+
+- Warnings (a notification output that fails, a command that is not confirmed, no mode function, latest values
+  that cannot be read) stopped the app: the edge client's log has no `log.w`. They are now written with `log.i` as
+  `warning: ...`, and the tests use a log without `w`.
+
 ## 0.3.0
 
 - A restart of the edge client no longer makes the instances silent until the next value: each clock is saved

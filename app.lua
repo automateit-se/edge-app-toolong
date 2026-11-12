@@ -17,7 +17,7 @@
 --
 -- Not yet: an acknowledge button. Sounds go straight to the speaker.
 
-local VERSION = "0.3.0"
+local VERSION = "0.3.1"
 local TICK_S = 5
 local LATE_S = 3600 -- a notification queued longer than this is marked late; a missed sound this old is skipped
 local RETRY_S = 60
@@ -374,10 +374,13 @@ local state = { monitor = nil, settings = nil, devices = {}, player = nil, verif
 
 local function now() return os.time() end
 
+--- The edge client's log has i, e and d (no w): warnings are written with log.i.
+local function warn(f, ...) log.i("warning: " .. f, ...) end
+
 local function warn_once(key, f, ...)
   if state.warned[key] then return end
   state.warned[key] = true
-  log.w(f, ...)
+  warn(f, ...)
 end
 
 local function publish(topic, value, msg)
@@ -429,7 +432,7 @@ local function send(output, payload, queued_at)
   local ok, err = pcall(lynx.notify, output, body)
   if not ok then
     state.queue[#state.queue + 1] = { output = output, payload = payload, at = queued_at or now() }
-    log.w("notification output %d could not be called, queued: %s", output, tostring(err))
+    warn("notification output %d could not be called, queued: %s", output, tostring(err))
   end
   return ok
 end
@@ -500,7 +503,7 @@ local function check_verifications(force)
     local ok = M.same_value(last_values[c.verify_topic], c.value)
     if ok or force or now() >= v.deadline then
       v.action.payload.control = { topic = c.topic, value = c.value, confirmed = ok }
-      if not ok then log.w("%s: %s did not confirm %s", v.action.label, c.verify_topic, tostring(c.value)) end
+      if not ok then warn("%s: %s did not confirm %s", v.action.label, c.verify_topic, tostring(c.value)) end
       play(v.action)
       notify(v.action.step, v.action.payload)
     else
@@ -608,7 +611,7 @@ local function catch_up()
   if #topics == 0 then return end
   local ok, statuses = pcall(lynx.getStatus, topics)
   if not ok or type(statuses) ~= "table" then
-    log.w("latest values could not be read, clocks start with the next value")
+    warn("latest values could not be read, clocks start with the next value")
     return
   end
   for _, s in ipairs(statuses) do
@@ -645,7 +648,7 @@ function onStart()
     log.e("no group set: nothing to watch")
     return
   end
-  if #state.settings.steps == 0 then log.w("no steps with a time: the app only shows status") end
+  if #state.settings.steps == 0 then warn("no steps with a time: the app only shows status") end
   state.monitor = M.monitor(state.settings, {})
   local ok, n = pcall(refresh)
   if not ok then log.e("could not read functions: %s", tostring(n)) n = 0 end
