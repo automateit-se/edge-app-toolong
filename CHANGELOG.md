@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.4.0
+
+- **The form, without tags**: the functions are chosen in the form (*Det här bevakas*: function, name in the
+  notification, own sound). The app writes `toolong.group`, `toolong.label` and `toolong.sound` on them; nobody has
+  to know the tags exist.
+- **Both ways, last change wins**: a change in the form is written to the functions' metadata, field by field; a
+  change of the metadata in IoT Open or another system is written back into the form. The form the app last
+  applied is kept retained (`obj/toolong/<group>/form`), so a restart is not taken for a change.
+- **Two pages**: *Bevakning* for everyone, *Avancerat* for the installer. Commands moved to their own list
+  (`controls`) on *Avancerat*; a step at the same time waits for the check as before. Commands in steps still work.
+- **Several instances per function**: `toolong.group` can be a comma separated list.
+- **Plain words**: modes can be written as people see them (`Borta, Semester`) and recipient groups as in the
+  Recipients app (`Hemtjänst natt`). Without a group name the instance gets one of its own (`toolong-<id>`).
+- A step at 0 minutes runs at once (for an alarm function from another app that should notify directly).
+
 ## 0.3.1
 
 - Warnings (a notification output that fails, a command that is not confirmed, no mode function, latest values

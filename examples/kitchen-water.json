@@ -1,12 +1,39 @@
 {
   "name": "Vatten i köket",
-  "group": "kitchen-water",
-  "debounce_s": 10,
-  "sound_default": "iotopen/kitchen-water-running.mp3",
+  "watch": [
+    {
+      "watch_function": 2101,
+      "watch_label": "kallvattnet i köket",
+      "watch_sound": "iotopen/kitchen-water-running.mp3"
+    }
+  ],
   "steps": [
-    { "step_after_min": 10, "step_sound": true, "step_outputs": [1001], "step_recipient_group": "staff" },
-    { "step_after_min": 20, "step_sound": true, "step_outputs": [1002, 1004], "step_recipient_group": "staff",
-      "step_control_topic": "set/obj/knx/0/1/40", "step_control_value": "1",
-      "step_verify_topic": "obj/knx/0/2/40", "step_verify_s": 30 }
-  ]
+    {
+      "step_after_min": 10,
+      "step_sound": true,
+      "step_outputs": [
+        1001
+      ],
+      "step_recipient_group": "Personal"
+    },
+    {
+      "step_after_min": 20,
+      "step_sound": true,
+      "step_outputs": [
+        1002,
+        1004
+      ],
+      "step_recipient_group": "Personal"
+    }
+  ],
+  "controls": [
+    {
+      "control_after_min": 20,
+      "control_topic": "set/obj/knx/0/1/40",
+      "control_value": "1",
+      "control_verify_topic": "obj/knx/0/2/40",
+      "control_verify_s": 30
+    }
+  ],
+  "debounce_s": 10
 }

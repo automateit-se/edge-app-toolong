@@ -23,12 +23,57 @@ function S.json:encode(v)
   for _, k in ipairs(keys) do parts[#parts + 1] = S.json:encode(tostring(k)) .. ":" .. S.json:encode(v[k]) end
   return "{" .. table.concat(parts, ",") .. "}"
 end
-function S.json:decode(s) -- enough for {"value":..,"timestamp":..,"msg":..}
-  local out = {}
-  for k, v in s:gmatch('"([%w_]+)"%s*:%s*("?[^,"}]*"?)') do
-    if v:sub(1, 1) == '"' then out[k] = v:sub(2, -2) elseif v == "true" then out[k] = true elseif v == "false" then out[k] = false else out[k] = tonumber(v) end
+function S.json:decode(s) -- a small but real JSON decoder
+  local i = 1
+  local function ws() i = s:find("[^ \t\r\n]", i) or #s + 1 end
+  local value
+  local function str()
+    local out = {}
+    i = i + 1
+    while true do
+      local c = s:sub(i, i)
+      if c == '"' then i = i + 1 break end
+      if c == "\\" then
+        local n = s:sub(i + 1, i + 1)
+        if n == "u" then out[#out + 1] = utf8 and utf8.char(tonumber(s:sub(i + 2, i + 5), 16)) or string.char(tonumber(s:sub(i + 2, i + 5), 16) % 256) i = i + 6
+        else out[#out + 1] = ({ n = "\n", t = "\t", r = "\r", b = "\b", f = "\f" })[n] or n i = i + 2 end
+      else out[#out + 1] = c i = i + 1 end
+    end
+    return table.concat(out)
   end
-  return out
+  function value()
+    ws()
+    local c = s:sub(i, i)
+    if c == "{" then
+      local t = {}
+      i = i + 1 ws()
+      if s:sub(i, i) == "}" then i = i + 1 return t end
+      while true do
+        ws() local k = str() ws() i = i + 1
+        t[k] = value() ws()
+        local d = s:sub(i, i) i = i + 1
+        if d == "}" then return t end
+      end
+    elseif c == "[" then
+      local t = {}
+      i = i + 1 ws()
+      if s:sub(i, i) == "]" then i = i + 1 return t end
+      while true do
+        t[#t + 1] = value() ws()
+        local d = s:sub(i, i) i = i + 1
+        if d == "]" then return t end
+      end
+    elseif c == '"' then return str()
+    elseif s:sub(i, i + 3) == "true" then i = i + 4 return true
+    elseif s:sub(i, i + 4) == "false" then i = i + 5 return false
+    elseif s:sub(i, i + 3) == "null" then i = i + 4 return S.json.null
+    else
+      local n = s:match("^-?[%d%.eE+-]+", i)
+      i = i + #n
+      return tonumber(n)
+    end
+  end
+  return value()
 end
 
 -- ---- the simulated edge client -------------------------------------------------------------------------------------
@@ -64,11 +109,20 @@ end
 --- Loads app.lua in a simulated edge client. opts: cfg, functions, devices, status (lynx.getStatus answer),
 --- notify_fails (function returning true while notifications fail).
 function S.load_app(opts)
-  local sim = { retained = opts.retained or {}, clock = opts.clock or S.T0, timers = {}, published = {}, notified = {}, logs = {}, handlers = {}, subs = {} }
+  local sim = { api = {}, retained = opts.retained or {}, clock = opts.clock or S.T0, timers = {}, published = {}, notified = {}, logs = {}, handlers = {}, subs = {} }
   local functions = opts.functions or { S.water(101, "obj/knx/0/1/10") }
   local all_functions = { S.PLAY }
   for _, f in ipairs(opts.extra_functions or {}) do all_functions[#all_functions + 1] = f end
   for _, f in ipairs(functions) do all_functions[#all_functions + 1] = f end
+  sim.instance_config = opts.cfg or S.config()
+  --- A function added in IoT Open while the app runs.
+  function sim.add_function(f) all_functions[#all_functions + 1] = f end
+  function sim.fn(id) for _, f in ipairs(all_functions) do if f.id == id then return f end end end
+  function sim.puts(prefix)
+    local out = {}
+    for _, c in ipairs(sim.api) do if c.method == "PUT" and c.path:sub(1, #prefix) == prefix then out[#out + 1] = c end end
+    return out
+  end
   local function match(item, filter)
     for k, v in pairs(filter or {}) do
       if k == "type" then if item.type ~= v then return false end
@@ -81,6 +135,27 @@ function S.load_app(opts)
       local out = {}
       for _, f in ipairs(all_functions) do if match(f, filter) then out[#out + 1] = f end end
       return out
+    end,
+    -- PUT of a function's metadata, and the instance's config (GET the list, PUT one)
+    apiCall = function(method, path, body)
+      sim.api[#sim.api + 1] = { method = method, path = path, body = body }
+      local fid = path:match("^/api/v2/functionx/%d+/(%d+)$")
+      if method == "PUT" and fid then
+        for _, f in ipairs(all_functions) do
+          if f.id == tonumber(fid) then f.meta = body.meta end
+        end
+        return body
+      end
+      if path:match("^/api/v2/edge/app/configured/%d+$") and method == "GET" then
+        if opts.config_refused then error("403 forbidden") end
+        return { { id = 5, app_id = 77, name = "För länge", version = "0.4.0", config = sim.instance_config } }
+      end
+      if path:match("^/api/v2/edge/app/configured/%d+/5$") and method == "PUT" then
+        if opts.config_refused then error("403 forbidden") end
+        sim.instance_config = body.config
+        return body
+      end
+      error("unexpected call " .. method .. " " .. path)
     end,
     getDevices = function(filter)
       local out = {}
@@ -118,7 +193,7 @@ function S.load_app(opts)
   local os_fake = setmetatable({ time = function() return sim.clock end }, { __index = os })
   local env = setmetatable({
     TOOLONG_TEST = true,
-    cfg = opts.cfg or S.config(),
+    cfg = sim.instance_config,
     app = { id = 5, installation_id = 1001, name = "För länge" },
     json = S.json, lynx = lynx, mq = mq, timer = timer, os = os_fake,
     log = { i = logger("I"), e = logger("E"), d = logger("D") },

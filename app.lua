@@ -1,8 +1,9 @@
 -- Too long (För länge): warns when something has been active too long, for example water running, a fridge door
 -- open or the oven on, and acts on it in steps.
 --
--- One app instance is one monitoring policy. It watches every function with metadata toolong.group equal to the
--- instance's group, each with a clock of its own that starts at time zero, when the function became active. Every
+-- One app instance is one monitoring policy. It watches every function whose metadata toolong.group holds the
+-- instance's group (a comma separated list, so a function can be watched by several instances), each with a clock
+-- of its own that starts at time zero, when the function became active. Every
 -- step's time counts from time zero, never from the step before. A step can
 --   - send a command (for example close the water valve) and check that it took effect,
 --   - play a sound on the installation's speaker (a device of type "audio", see ha-iotopen 0.9.0),
@@ -15,9 +16,20 @@
 -- type "mode"), for example active_modes = away, vacation. In other modes no step runs, but the clock goes on, so a
 -- change of mode in the middle of an episode takes it from the right time. Without a mode, steps always run.
 --
+-- Settings live in two places that are kept in step: the form (the instance's config, edited in IoT Open, App
+-- Management or any other front end) and the metadata on the functions (toolong.group, toolong.label,
+-- toolong.sound, toolong.active_value), which is what the monitor reads. Whoever changed last wins:
+--   - the form changed (the app is restarted with a new config): the fields that changed since the form the app
+--     last applied are written to the functions' metadata, and nothing else;
+--   - the metadata changed (onFunctionsUpdated, from IoT Open's front end or a third system): the form is written
+--     again from the metadata, so every front end shows what applies.
+-- The form the app last applied is kept retained on the local broker (obj/toolong/<group>/form), so a restart is
+-- not mistaken for a change.
+--
 -- Not yet: an acknowledge button. Sounds go straight to the speaker.
 
-local VERSION = "0.3.1"
+local VERSION = "0.4.0"
+local SYNC_WAIT_S = 3 -- time for the retained form to arrive before the first sync
 local TICK_S = 5
 local LATE_S = 3600 -- a notification queued longer than this is marked late; a missed sound this old is skipped
 local RETRY_S = 60
@@ -34,6 +46,31 @@ local function bool(v, d)
 end
 local function trim(s) return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", "")) end
 local function str(v) if is_null(v) then return "" end return trim(v) end
+
+--- A key from a name a person writes: "Hemtjänst natt" -> "hemtjanst_natt". Keys are kept as they are.
+function M.slug(v)
+  local t = str(v)
+  for from, to in pairs({ ["å"] = "a", ["Å"] = "a", ["ä"] = "a", ["Ä"] = "a", ["ö"] = "o", ["Ö"] = "o", ["é"] = "e", ["É"] = "e", ["ü"] = "u", ["Ü"] = "u" }) do
+    t = t:gsub(from, to)
+  end
+  t = t:lower():gsub("[^a-z0-9_%-]+", "_"):gsub("_+", "_"):gsub("^_", ""):gsub("_$", "")
+  return t
+end
+
+--- The groups in a toolong.group value: "kitchen-water, night" -> { "kitchen-water", "night" }.
+function M.groups(v)
+  local out = {}
+  for part in str(v):gmatch("[^,;]+") do
+    local g = M.slug(part)
+    if g ~= "" then out[#out + 1] = g end
+  end
+  return out
+end
+
+function M.in_group(fn, group)
+  for _, g in ipairs(M.groups((fn.meta or {})["toolong.group"])) do if g == group then return true end end
+  return false
+end
 
 --- The first argument that is set and not blank, trimmed (nil arguments allowed, unlike ipairs over a list).
 local function first_set(...)
@@ -74,7 +111,7 @@ function M.settings(c)
   c = c or {}
   local s = {
     name = str(c.name) ~= "" and str(c.name) or "För länge",
-    group = str(c.group):lower(),
+    group = M.slug(c.group) ~= "" and M.slug(c.group) or ("toolong-" .. tostring(app and app.id or 0)),
     active_value = str(c.active_value),
     debounce_s = math.max(0, num(c.debounce_s, 10)),
     sound_default = str(c.sound_default),
@@ -83,17 +120,20 @@ function M.settings(c)
     active_modes = {},
     steps = {},
   }
-  for key in str(c.active_modes):lower():gmatch("[^,%s;]+") do s.active_modes[#s.active_modes + 1] = key end
+  for part in str(c.active_modes):gmatch("[^,;]+") do
+    local key = M.slug(part)
+    if key ~= "" then s.active_modes[#s.active_modes + 1] = key end
+  end
   for _, st in ipairs(type(c.steps) == "table" and c.steps or {}) do
     if type(st) == "table" then
-      local after = num(st.step_after_min, 0)
-      if after > 0 then
+      local after = tonumber(st.step_after_min)
+      if after and after >= 0 then
         local step = {
           after_s = after * 60,
           after_min = after,
           sound = bool(st.step_sound, false),
           outputs = ids(st.step_outputs),
-          recipient_group = str(st.step_recipient_group):lower(),
+          recipient_group = M.slug(st.step_recipient_group),
           repeat_s = math.max(0, num(st.step_repeat_every_min, 0)) * 60,
           max_repeats = math.max(0, math.floor(num(st.step_max_repeats, 0))),
         }
@@ -108,6 +148,25 @@ function M.settings(c)
         end
         s.steps[#s.steps + 1] = step
       end
+    end
+  end
+  -- commands are set on the advanced page, each with its own time; a step at the same time waits for its check
+  for _, ct in ipairs(type(c.controls) == "table" and c.controls or {}) do
+    local after, topic = tonumber(type(ct) == "table" and ct.control_after_min or nil), type(ct) == "table" and str(ct.control_topic) or ""
+    if after and after >= 0 and topic ~= "" then
+      local control = {
+        topic = topic,
+        value = tonumber(ct.control_value) or str(ct.control_value),
+        verify_topic = str(ct.control_verify_topic) ~= "" and str(ct.control_verify_topic) or nil,
+        verify_s = math.max(1, num(ct.control_verify_s, 30)),
+      }
+      local step
+      for _, st in ipairs(s.steps) do if st.after_min == after and not st.control then step = st break end end
+      if not step then
+        step = { after_s = after * 60, after_min = after, sound = false, outputs = {}, recipient_group = "", repeat_s = 0, max_repeats = 0 }
+        s.steps[#s.steps + 1] = step
+      end
+      step.control = control
     end
   end
   table.sort(s.steps, function(a, b) return a.after_s < b.after_s end)
@@ -125,6 +184,128 @@ end
 function M.label(fn)
   local meta = fn.meta or {}
   return first_set(meta["toolong.label"], meta.name) or ("funktion " .. tostring(fn.id))
+end
+
+-- ---- the form and the metadata ---------------------------------------------------------------------------------
+
+local FIELDS = { "label", "sound", "active_value" } -- toolong.<field> on the function, watch_<field> in the form
+
+--- The functions in the form, as rows { id, label, sound, active_value }, in the form's order (a function once).
+function M.form_rows(c)
+  local out, seen = {}, {}
+  for _, w in ipairs(type(c) == "table" and type(c.watch) == "table" and c.watch or {}) do
+    if type(w) == "table" then
+      local id = ids(w.watch_function)[1]
+      if id and not seen[id] then
+        seen[id] = true
+        out[#out + 1] = { id = id, label = str(w.watch_label), sound = str(w.watch_sound), active_value = str(w.watch_active_value) }
+      end
+    end
+  end
+  return out
+end
+
+--- The functions in the group according to their metadata, as rows, in the order of `order` (ids) first.
+function M.meta_rows(functions, group, order)
+  local by_id, out = {}, {}
+  for _, fn in ipairs(functions or {}) do
+    if fn.id and M.in_group(fn, group) then
+      local meta = fn.meta or {}
+      by_id[fn.id] = { id = fn.id, label = str(meta["toolong.label"]), sound = str(meta["toolong.sound"]), active_value = str(meta["toolong.active_value"]) }
+    end
+  end
+  for _, id in ipairs(order or {}) do
+    if by_id[id] then out[#out + 1] = by_id[id] by_id[id] = nil end
+  end
+  local rest = {}
+  for id in pairs(by_id) do rest[#rest + 1] = id end
+  table.sort(rest)
+  for _, id in ipairs(rest) do out[#out + 1] = by_id[id] end
+  return out
+end
+
+local function clean(v) return (tostring(v or ""):gsub("[\t\r\n]", " ")) end
+
+--- Rows as text for the retained topic and for comparing: one line per function, fields separated by tabs.
+function M.rows_text(rows)
+  local lines = {}
+  for _, r in ipairs(rows or {}) do
+    lines[#lines + 1] = table.concat({ tostring(r.id), clean(r.label), clean(r.sound), clean(r.active_value) }, "\t")
+  end
+  return table.concat(lines, "\n")
+end
+
+function M.parse_rows(text)
+  local out = {}
+  for line in tostring(text or ""):gmatch("[^\n]+") do
+    local f = {}
+    for part in (line .. "\t"):gmatch("([^\t]*)\t") do f[#f + 1] = part end
+    local id = tonumber(f[1])
+    if id then out[#out + 1] = { id = math.floor(id), label = f[2] or "", sound = f[3] or "", active_value = f[4] or "" } end
+  end
+  return out
+end
+
+local function by_id(rows)
+  local out = {}
+  for _, r in ipairs(rows or {}) do out[r.id] = r end
+  return out
+end
+
+--- What to write to the functions' metadata when the form changed from `prev` to `form`: { [id] = { key = value or
+--- false to remove } }. Without `prev` (first start, or the retained form is gone) the form is added to what is
+--- there and nothing is removed.
+function M.plan(prev, form, functions, group)
+  local fns, out = {}, {}
+  for _, fn in ipairs(functions or {}) do if fn.id then fns[fn.id] = fn end end
+  local before, after = by_id(prev or {}), by_id(form)
+  local function set(id, key, value)
+    out[id] = out[id] or {}
+    out[id][key] = value
+  end
+  for _, r in ipairs(form) do
+    local fn = fns[r.id]
+    if fn then
+      local old = before[r.id]
+      if not M.in_group(fn, group) and (old == nil or prev == nil) then
+        local gs = M.groups((fn.meta or {})["toolong.group"])
+        gs[#gs + 1] = group
+        set(r.id, "toolong.group", table.concat(gs, ","))
+      end
+      for _, f in ipairs(FIELDS) do
+        local key, value = "toolong." .. f, r[f]
+        local current = str((fn.meta or {})[key])
+        if prev == nil or old == nil then
+          if value ~= "" and value ~= current then set(r.id, key, value) end
+        elseif value ~= old[f] and value ~= current then
+          set(r.id, key, value ~= "" and value or false)
+        end
+      end
+    end
+  end
+  if prev then
+    for _, r in ipairs(prev) do
+      local fn = fns[r.id]
+      if not after[r.id] and fn and M.in_group(fn, group) then
+        local keep = {}
+        for _, g in ipairs(M.groups(fn.meta["toolong.group"])) do if g ~= group then keep[#keep + 1] = g end end
+        set(r.id, "toolong.group", #keep > 0 and table.concat(keep, ",") or false)
+      end
+    end
+  end
+  return out
+end
+
+--- The form's watch list from rows, for writing the instance's config.
+function M.form_watch(rows)
+  local out = {}
+  for _, r in ipairs(rows) do
+    local w = { watch_function = r.id, watch_label = r.label }
+    if r.sound ~= "" then w.watch_sound = r.sound end
+    if r.active_value ~= "" then w.watch_active_value = r.active_value end
+    out[#out + 1] = w
+  end
+  return out
 end
 
 -- ---- the monitor: pure logic, driven by values and a clock --------------------------------------------------------
@@ -315,6 +496,19 @@ function M.mode_states(text)
   return out
 end
 
+--- Labels from mode.states as keys: "Borta" -> "away", so a person can write the label they see.
+function M.mode_labels(text)
+  local out = {}
+  for part in tostring(text or ""):gmatch("[^,]+") do
+    local key, label = part:match("^%s*%d+:([%w_%-]+):?(.*)$")
+    if key then
+      out[key] = key
+      if M.slug(label) ~= "" then out[M.slug(label)] = key end
+    end
+  end
+  return out
+end
+
 --- true when the instance applies in the current mode: no active_modes set, or the mode is unknown (fail safe:
 --- better a warning too many than a water leak nobody hears about), or the current key is in the list.
 function M.mode_ok(settings, key)
@@ -370,7 +564,8 @@ end
 -- ---- edge client glue ----------------------------------------------------------------------------------------------
 
 local state = { monitor = nil, settings = nil, devices = {}, player = nil, verify = {}, queue = {}, warned = {},
-  mode_topic = nil, mode_states = {}, mode_key = nil }
+  mode_topic = nil, mode_states = {}, mode_key = nil, mode_labels = {}, functions = {},
+  form_applied = nil, form_received = false, synced = false }
 
 local function now() return os.time() end
 
@@ -391,6 +586,8 @@ local function status_base() return "obj/toolong/" .. state.settings.group end
 
 --- The clock of a function, retained on the local broker, so a restart of the edge client (also without
 --- internet) goes on where it was: value = time zero (0 = not active), msg = the steps that have run.
+local function form_topic() return status_base() .. "/form" end
+
 local function clock_topic(id) return status_base() .. "/" .. tostring(id) .. "/clock" end
 
 local function save_clock(id)
@@ -540,7 +737,7 @@ local subscribed = {}
 
 local function subscribe(topics)
   for topic in pairs(subscribed) do
-    mq:unbind(topic, topic:match("/clock$") and on_clock or on_message)
+    if topic ~= form_topic() then mq:unbind(topic, topic:match("/clock$") and on_clock or on_message) end
   end
   subscribed = {}
   for _, topic in ipairs(topics) do
@@ -560,12 +757,139 @@ local function verify_topics()
   return out
 end
 
+-- ---- keeping the form and the metadata in step ------------------------------------------------------------------
+
+--- Writes metadata changes { key = value or false } to a function, read again just before so that keys written by
+--- others in the meantime are kept.
+local function write_meta(fn, changes)
+  local meta = {}
+  for k, v in pairs(fn.meta or {}) do meta[k] = v end
+  local changed = false
+  for k, v in pairs(changes) do
+    if v == false then
+      if meta[k] ~= nil then meta[k] = nil changed = true end
+    elseif meta[k] ~= v then
+      meta[k] = v
+      changed = true
+    end
+  end
+  if not changed then return false end
+  lynx.apiCall("PUT", "/api/v2/functionx/" .. tostring(fn.installation_id or app.installation_id) .. "/" .. tostring(fn.id), {
+    id = fn.id,
+    installation_id = fn.installation_id or app.installation_id,
+    type = fn.type,
+    meta = meta,
+    protected_meta = fn.protected_meta or {},
+  })
+  return true
+end
+
+local function decoded(v)
+  if type(v) == "string" then
+    local ok, d = pcall(json.decode, json, v)
+    if ok then return d end
+  end
+  return v
+end
+
+--- Writes the form again from the metadata, so every front end shows what applies. The edge client restarts the
+--- app with the new config. false when IoT Open refuses (the form is then only behind; the metadata still applies).
+local function mirror(rows)
+  local iid = app.installation_id
+  local ok, err = pcall(function()
+    local list = decoded(lynx.apiCall("GET", "/api/v2/edge/app/configured/" .. tostring(iid)))
+    local inst
+    for _, x in ipairs(type(list) == "table" and list or {}) do
+      if type(x) == "table" and tonumber(x.id) == tonumber(app.id) then inst = x break end
+    end
+    assert(inst, "this instance was not found")
+    local config = {}
+    for k, v in pairs(decoded(inst.config) or {}) do config[k] = v end
+    config.watch = M.form_watch(rows)
+    local body = {}
+    for k, v in pairs(inst) do body[k] = v end
+    body.config = config
+    body.installation_id = iid
+    lynx.apiCall("PUT", "/api/v2/edge/app/configured/" .. tostring(iid) .. "/" .. tostring(app.id), body)
+  end)
+  if not ok then
+    warn_once("mirror", "the form could not be updated from the metadata (%s): it shows an older list", tostring(err))
+    return false
+  end
+  log.i("form updated from the metadata: %d functions", #rows)
+  return true
+end
+
+local function save_form(rows)
+  state.form_applied = rows
+  mq:pub(form_topic(), json:encode({ value = M.rows_text(rows), msg = "form", timestamp = now() }), true, 1)
+end
+
+--- The metadata changed: when it no longer matches the form, the form is written again.
+local function check_form()
+  if not state.synced then return end
+  local applied = state.form_applied or {}
+  local order = {}
+  for _, r in ipairs(applied) do order[#order + 1] = r.id end
+  local rows = M.meta_rows(state.functions, state.settings.group, order)
+  if M.rows_text(rows) ~= M.rows_text(applied) then
+    log.i("the metadata changed: the form is updated")
+    -- only a form that was written counts as applied: otherwise the next start would take the older form as a
+    -- change and undo the metadata
+    if mirror(rows) then save_form(rows) end
+  end
+end
+
+--- At start, once the retained form has had time to arrive: applies what changed in the form to the metadata, then
+--- writes the form again if the metadata holds more (functions tagged in IoT Open, or values changed there).
+local function sync()
+  local form = M.form_rows(cfg)
+  local prev = state.form_received and state.form_applied or nil
+  local functions = lynx.getFunctions() or {}
+  if prev == nil or M.rows_text(prev) ~= M.rows_text(form) then
+    local plan = M.plan(prev, form, functions, state.settings.group)
+    local n = 0
+    for _, fn in ipairs(functions) do
+      if plan[fn.id] then
+        local ok, res = pcall(write_meta, fn, plan[fn.id])
+        if not ok then warn("function %s could not be updated: %s", tostring(fn.id), tostring(res))
+        elseif res then n = n + 1 end
+      end
+    end
+    if n > 0 then log.i("form applied: %d functions updated", n) end
+    for _, r in ipairs(form) do
+      local found = false
+      for _, fn in ipairs(functions) do if fn.id == r.id then found = true break end end
+      if not found then warn("function %d in the form does not exist", r.id) end
+    end
+    if n > 0 then functions = lynx.getFunctions() or {} end
+  end
+  local order = {}
+  for _, r in ipairs(form) do order[#order + 1] = r.id end
+  local rows = M.meta_rows(functions, state.settings.group, order)
+  if M.rows_text(rows) ~= M.rows_text(form) and not mirror(rows) then
+    save_form(form)
+  else
+    save_form(rows)
+  end
+  state.synced = true
+end
+
+local function on_form(_, payload)
+  if state.form_received then return end
+  local ok, data = pcall(json.decode, json, payload)
+  if not ok or type(data) ~= "table" then return end
+  state.form_received = true
+  state.form_applied = M.parse_rows(data.value)
+end
+
 --- Reads the watched functions, devices and the speaker again; keeps running clocks.
 local function refresh()
-  local functions = lynx.getFunctions({ ["toolong.group"] = state.settings.group }) or {}
+  local functions = lynx.getFunctions() or {}
+  state.functions = functions
   local mine = {}
   for _, fn in ipairs(functions) do
-    if fn.meta and fn.meta["toolong.group"] == state.settings.group then mine[#mine + 1] = fn end
+    if M.in_group(fn, state.settings.group) then mine[#mine + 1] = fn end
   end
   state.monitor:set_functions(mine)
   state.devices = lynx.getDevices() or {}
@@ -579,10 +903,13 @@ local function refresh()
         state.mode_topic = fn.meta.topic_read
         state.mode_states = M.mode_states(fn.meta["mode.states"])
         topics[#topics + 1] = state.mode_topic
-        local known = {}
-        for _, k in pairs(state.mode_states) do known[k] = true end
-        for _, k in ipairs(state.settings.active_modes) do
-          if not known[k] then warn_once("mode_key_" .. k, "mode %s is not one of the installation's modes", k) end
+        local labels = M.mode_labels(fn.meta["mode.states"])
+        for i, k in ipairs(state.settings.active_modes) do
+          if labels[k] then
+            state.settings.active_modes[i] = labels[k]
+          else
+            warn_once("mode_key_" .. k, "mode %s is not one of the installation's modes", k)
+          end
         end
         break
       end
@@ -642,19 +969,27 @@ local function every_minute()
   if #state.queue > 0 then pcall(retry_queue) end
 end
 
+local function start_sync()
+  local ok, err = pcall(sync)
+  if not ok then log.e("could not apply the form: %s", tostring(err)) state.synced = true end
+  local ok2, n = pcall(refresh)
+  if ok2 then
+    log.i("%s watches %d functions with toolong.group = %s", state.settings.name, n, state.settings.group)
+  end
+end
+
 function onStart()
   state.settings = M.settings(cfg)
-  if state.settings.group == "" then
-    log.e("no group set: nothing to watch")
-    return
-  end
   if #state.settings.steps == 0 then warn("no steps with a time: the app only shows status") end
   state.monitor = M.monitor(state.settings, {})
+  mq:sub(form_topic(), 1)
+  mq:bind(form_topic(), on_form)
   local ok, n = pcall(refresh)
   if not ok then log.e("could not read functions: %s", tostring(n)) n = 0 end
   pcall(catch_up)
-  log.i("toolong %s: %s watches %d functions with toolong.group = %s, %d steps", VERSION, state.settings.name, n,
-    state.settings.group, #state.settings.steps)
+  log.i("toolong %s: %s, group %s, %d functions, %d steps", VERSION, state.settings.name, state.settings.group, n,
+    #state.settings.steps)
+  timer:after(SYNC_WAIT_S, start_sync)
   timer:after(TICK_S, tick)
   timer:after(1, every_minute)
 end
@@ -662,7 +997,9 @@ end
 function onFunctionsUpdated()
   if state.monitor then
     local ok, err = pcall(refresh)
-    if not ok then log.e("could not read functions: %s", tostring(err)) end
+    if not ok then log.e("could not read functions: %s", tostring(err)) return end
+    local ok2, err2 = pcall(check_form)
+    if not ok2 then log.e("could not compare the form: %s", tostring(err2)) end
   end
 end
 

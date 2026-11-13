@@ -23,10 +23,11 @@ local COLD, PLAYER, VALVE = S.COLD, S.PLAYER, S.VALVE
 check("steps are sorted by time and steps without a time are left out", function()
   local M = load_app({})
   local s = M.settings(config({ steps = { { step_after_min = 20 }, { step_after_min = 0 }, { step_after_min = "5" }, { step_outputs = { 1 } } } }))
-  eq(#s.steps, 2, "steps")
-  eq(s.steps[1].after_min, 5, "first")
-  eq(s.steps[1].n, 1, "numbered after sorting")
-  eq(s.steps[2].after_min, 20, "second")
+  eq(#s.steps, 3, "steps (0 = at once)")
+  eq(s.steps[1].after_min, 0, "first")
+  eq(s.steps[2].after_min, 5, "second")
+  eq(s.steps[2].n, 2, "numbered after sorting")
+  eq(s.steps[3].after_min, 20, "third")
 end)
 
 check("output selectors as a list or as a map of ids", function()
@@ -170,7 +171,7 @@ check("a restart without internet goes on from the saved clock, without repeatin
   sim.advance(12 * 60)
   eq(#sim.to(1001), 1, "step 1 before the restart")
   -- the edge client restarts 3 minutes later, offline, and no new value comes (KNX values are not retained)
-  local _, env2, sim2 = load_app({ retained = sim.retained, clock = sim.clock + 3 * 60, offline = true })
+  local _, env2, sim2 = load_app({ cfg = sim.instance_config, retained = sim.retained, clock = sim.clock + 3 * 60, offline = true })
   env2.onStart()
   sim2.advance(4 * 60)
   eq(#sim2.to(1001), 0, "step 1 not sent again")
@@ -184,7 +185,7 @@ check("a saved clock is ignored when IoT Open says the function is no longer act
   env.onStart()
   sim.value(COLD, 1)
   sim.advance(5 * 60)
-  local _, env2, sim2 = load_app({ retained = sim.retained, clock = sim.clock + 60,
+  local _, env2, sim2 = load_app({ cfg = sim.instance_config, retained = sim.retained, clock = sim.clock + 60,
     status = { { topic = COLD, value = 0, timestamp = sim.clock + 30 } } })
   env2.lynx.getStatus = env2.lynx.getStatus
   env2.onStart()
@@ -317,23 +318,180 @@ check("a function tagged later is picked up without losing running clocks", func
   env.onStart()
   sim.value(COLD, 1)
   sim.advance(5 * 60)
-  functions[2] = water(102, "obj/knx/0/1/11")
-  env.lynx.getFunctions = (function(orig) return function(f)
-    local out = orig(f)
-    if f and f["toolong.group"] then out[#out + 1] = functions[2] end
-    return out
-  end end)(env.lynx.getFunctions)
+  sim.add_function(water(102, "obj/knx/0/1/11"))
   env.onFunctionsUpdated()
   assert(sim.handlers["obj/knx/0/1/11"], "new topic subscribed")
   sim.advance(5 * 60 + 5)
   eq(#sim.to(1001), 1, "the running clock was kept")
 end)
 
-check("no group: nothing is watched", function()
-  local _, env, sim = load_app({ cfg = config({ group = "" }) })
+check("no group set: the instance gets one of its own", function()
+  local M = load_app({})
+  eq(M.settings(config({ group = "" })).group, "toolong-5", "from the instance id")
+  eq(M.settings(config({ group = "Kök vatten" })).group, "kok_vatten", "a name becomes a key")
+end)
+
+-- ---- the form and the metadata ----------------------------------------------------------------------------------
+
+local function untagged(id, topic, name)
+  return { id = id, installation_id = 1001, type = "boolean_text", meta = { name = name or "Diskmaskin", topic_read = topic, state_true = "1" } }
+end
+
+local function watch_config(rows, extra)
+  local c = config(extra)
+  c.watch = rows
+  return c
+end
+
+check("the form tags the functions it lists, and the monitor watches them", function()
+  local cfg = watch_config({ { watch_function = 102, watch_label = "diskmaskinen", watch_sound = "iotopen/dish.mp3" } })
+  local _, env, sim = load_app({ cfg = cfg, functions = { untagged(102, "obj/knx/0/1/20") } })
   env.onStart()
-  eq(next(sim.handlers), nil, "no subscriptions")
-  assert(sim.logs[#sim.logs]:find("no group", 1, true))
+  sim.advance(4)
+  local meta = sim.fn(102).meta
+  eq(meta["toolong.group"], "kitchen-water", "group")
+  eq(meta["toolong.label"], "diskmaskinen", "label")
+  eq(meta["toolong.sound"], "iotopen/dish.mp3", "sound")
+  eq(meta.name, "Diskmaskin", "other keys kept")
+  assert(sim.handlers["obj/knx/0/1/20"], "watched")
+  eq(#sim.puts("/api/v2/edge/app/configured"), 0, "form already right: not written")
+end)
+
+check("a restart writes nothing when neither side changed", function()
+  local cfg = watch_config({ { watch_function = 102, watch_label = "diskmaskinen" } })
+  local _, env, sim = load_app({ cfg = cfg, functions = { untagged(102, "obj/knx/0/1/20") } })
+  env.onStart()
+  sim.advance(4)
+  local _, env2, sim2 = load_app({ cfg = sim.instance_config, retained = sim.retained, clock = sim.clock + 60, functions = { sim.fn(102) } })
+  env2.onStart()
+  sim2.advance(4)
+  eq(#sim2.puts("/api/v2/"), 0, "no writes")
+end)
+
+check("a row removed from the form removes only this instance's group", function()
+  local fn = untagged(102, "obj/knx/0/1/20")
+  local cfg = watch_config({ { watch_function = 102, watch_label = "diskmaskinen" } })
+  local _, env, sim = load_app({ cfg = cfg, functions = { fn } })
+  env.onStart()
+  sim.advance(4)
+  fn.meta["toolong.group"] = "kitchen-water,night" -- another instance watches it too
+  local cfg2 = watch_config({})
+  local _, env2, sim2 = load_app({ cfg = cfg2, retained = sim.retained, clock = sim.clock + 60, functions = { fn } })
+  env2.onStart()
+  sim2.advance(4)
+  eq(fn.meta["toolong.group"], "night", "the other instance keeps it")
+  eq(fn.meta["toolong.label"], "diskmaskinen", "label kept")
+  eq(sim2.handlers["obj/knx/0/1/20"], nil, "no longer watched")
+end)
+
+check("a change in IoT Open updates the form, and a restart then changes nothing", function()
+  local fn = untagged(102, "obj/knx/0/1/20")
+  local cfg = watch_config({ { watch_function = 102, watch_label = "diskmaskinen" } })
+  local _, env, sim = load_app({ cfg = cfg, functions = { fn } })
+  env.onStart()
+  sim.advance(4)
+  fn.meta["toolong.label"] = "diskmaskinen i köket" -- changed in IoT Open's front end
+  sim.add_function(water(103, "obj/knx/0/1/21"))       -- and a function tagged there
+  env.onFunctionsUpdated()
+  local w = sim.instance_config.watch
+  eq(#w, 2, "both in the form")
+  eq(w[1].watch_function, 102, "form order kept")
+  eq(w[1].watch_label, "diskmaskinen i köket", "new label in the form")
+  eq(w[2].watch_function, 103, "tagged function added")
+  local _, env2, sim2 = load_app({ cfg = sim.instance_config, retained = sim.retained, clock = sim.clock + 60, functions = { fn, sim.fn(103) } })
+  env2.onStart()
+  sim2.advance(4)
+  eq(#sim2.puts("/api/v2/"), 0, "no writes after the restart")
+end)
+
+check("whoever changed last wins, field by field", function()
+  local fn = untagged(102, "obj/knx/0/1/20")
+  local cfg = watch_config({ { watch_function = 102, watch_label = "diskmaskinen", watch_sound = "iotopen/a.mp3" } })
+  local _, env, sim = load_app({ cfg = cfg, functions = { fn } })
+  env.onStart()
+  sim.advance(4)
+  fn.meta["toolong.sound"] = "iotopen/b.mp3" -- changed elsewhere while the app was stopped
+  local cfg2 = watch_config({ { watch_function = 102, watch_label = "disken", watch_sound = "iotopen/a.mp3" } })
+  local _, env2, sim2 = load_app({ cfg = cfg2, retained = sim.retained, clock = sim.clock + 60, functions = { fn } })
+  env2.onStart()
+  sim2.advance(4)
+  eq(fn.meta["toolong.label"], "disken", "the form changed the label")
+  eq(fn.meta["toolong.sound"], "iotopen/b.mp3", "the sound changed elsewhere is kept")
+  eq(sim2.instance_config.watch[1].watch_sound, "iotopen/b.mp3", "and the form shows it")
+end)
+
+check("an old instance with tags only gets its form filled in", function()
+  local _, env, sim = load_app({})
+  env.onStart()
+  sim.advance(4)
+  eq(sim.instance_config.watch[1].watch_function, 101, "tagged function in the form")
+  eq(#sim.puts("/api/v2/functionx"), 0, "metadata untouched")
+end)
+
+check("when IoT Open refuses the form, the metadata still applies and a restart removes nothing", function()
+  local _, env, sim = load_app({ config_refused = true })
+  env.onStart()
+  sim.advance(4)
+  local warned = false
+  for _, l in ipairs(sim.logs) do if l:find("could not be updated from the metadata", 1, true) then warned = true end end
+  assert(warned, "warning")
+  local _, env2, sim2 = load_app({ cfg = sim.instance_config, config_refused = true, retained = sim.retained, clock = sim.clock + 60 })
+  env2.onStart()
+  sim2.advance(4)
+  eq(sim2.fn(101).meta["toolong.group"], "kitchen-water", "tag kept")
+  eq(#sim2.puts("/api/v2/functionx"), 0, "nothing removed")
+end)
+
+check("a function in two instances is watched by both", function()
+  local fn = water(101, COLD, { ["toolong.group"] = "night, kitchen-water" })
+  local _, env, sim = load_app({ functions = { fn } })
+  env.onStart()
+  assert(sim.handlers[COLD], "kitchen-water")
+  local _, env2, sim2 = load_app({ cfg = config({ group = "night" }), functions = { fn } })
+  env2.onStart()
+  assert(sim2.handlers[COLD], "night")
+end)
+
+-- ---- the advanced page and plain words ---------------------------------------------------------------------------
+
+check("commands from the advanced page join the step at the same time, or become a step of their own", function()
+  local M = load_app({})
+  local s = M.settings(config({
+    steps = { { step_after_min = 20, step_outputs = { 1 } } },
+    controls = { { control_after_min = 20, control_topic = "set/obj/knx/0/1/40", control_value = "1", control_verify_topic = "obj/knx/0/2/40" },
+                 { control_after_min = 30, control_topic = "set/obj/knx/0/1/41", control_value = "1" } },
+  }))
+  eq(#s.steps, 2, "steps")
+  eq(s.steps[1].control.topic, "set/obj/knx/0/1/40", "joined")
+  eq(s.steps[1].outputs[1], 1, "the step's notification kept")
+  eq(s.steps[2].after_min, 30, "own step")
+  eq(#s.steps[2].outputs, 0, "nothing else")
+end)
+
+check("modes and recipient groups can be written as people see them", function()
+  local M, env, sim = load_app({ cfg = config({ active_modes = "Borta, Semester", steps = { { step_after_min = 1, step_outputs = { 1001 } } } }),
+    extra_functions = { S.MODE } })
+  env.onStart()
+  eq(M.mode_labels(S.MODE.meta["mode.states"]).borta, "away", "label to key")
+  eq(M.settings(config({ steps = { { step_after_min = 1, step_recipient_group = "Hemtjänst natt" } } })).steps[1].recipient_group, "hemtjanst_natt", "group key")
+  sim.value("obj/mode/default", 1)
+  sim.value(COLD, 1)
+  sim.advance(70)
+  eq(#sim.to(1001), 1, "runs in Borta")
+  sim.value("obj/mode/default", 0)
+  sim.value(COLD, 0)
+  sim.advance(20)
+  sim.value(COLD, 1)
+  sim.advance(70)
+  eq(#sim.to(1001), 1, "paused in Hemma")
+end)
+
+check("a step at 0 minutes runs at once", function()
+  local _, env, sim = load_app({ cfg = config({ steps = { { step_after_min = 0, step_outputs = { 1001 } } } }) })
+  env.onStart()
+  sim.value(COLD, 1)
+  sim.advance(5)
+  eq(#sim.to(1001), 1, "at once")
 end)
 
 check("the code returns nothing in the edge client", function()

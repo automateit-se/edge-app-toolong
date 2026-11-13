@@ -8,69 +8,72 @@ Technical names (metadata keys, payload, topics) are in English; the settings fo
 
 ## The idea
 
-- **One instance = one monitoring policy.** It watches every function with metadata `toolong.group` equal to the
-  instance's group. A new sensor is added by tagging it; the app does not change.
+- **One instance = one monitoring policy**, set in a form with two pages: *Bevakning* (what is watched, the steps,
+  the modes) for everyone, and *Avancerat* (commands, sound, technical settings) for the installer.
 - **Every function has a clock of its own**, starting at time zero when it becomes active.
 - **Every step's time counts from time zero**, never from the step before. "20 minutes" always means 20 minutes
-  after the water started running.
-- What differs between the functions lives on the function: `toolong.label` (the name in texts, e.g.
-  `kylskåpsdörren`), `toolong.sound` (its own sound file), `toolong.active_value`.
+  after the water started running. 0 means at once.
 - Texts and recipients live in IoT Open's notification outputs; the app sends a payload the template uses.
 
+## The form and the metadata
+
+What is watched is stored as metadata on the functions in IoT Open, and the form is a way to edit it:
+
+| Metadata on the function | In the form (*Det här bevakas*) |
+|---|---|
+| `toolong.group` | the row exists (the instance's group; a comma separated list when several instances watch it) |
+| `toolong.label` | Namn i aviseringen, e.g. `kylskåpsdörren` |
+| `toolong.sound` | Eget ljud |
+| `toolong.active_value` | Värde som betyder aktiv |
+
+The two are kept in step, and **whoever changed last wins**, field by field:
+
+- **The form changed** (IoT Open restarts the app with the new config): the fields that changed since the form the
+  app last applied are written to the functions. A row removed from the form removes only this instance's group
+  from the function. Other keys on the function, and changes made elsewhere in other fields, are kept.
+- **The metadata changed** (in IoT Open's front end or a third system; `onFunctionsUpdated`): the form is written
+  again from the metadata (`PUT /api/v2/edge/app/configured/<installation>/<instance>`), so every front end shows
+  what applies. The edge client then restarts the app, which changes nothing more.
+- The form the app last applied is kept retained on the local broker (`obj/toolong/<group>/form`), so a restart is
+  not taken for a change. Without it (a new broker) the form is added to the metadata and nothing is removed.
+- If IoT Open refuses to update the form, a warning is logged; the metadata still applies and the form shows an
+  older list until it is saved again.
+- An instance from before 0.4 (tags only) gets its form filled in from the metadata at the first start.
+
 ## Settings
+
+*Bevakning*:
 
 | Setting | Key | Meaning |
 |---|---|---|
 | Namn | `name` | sent in the payload as `instance` |
-| Grupp (tagg) | `group` | functions with `toolong.group` = this are watched |
-| Värde som betyder aktiv | `active_value` | empty: the function's `state_open` / `state_on` / `state_true`, otherwise `1` |
-| Avstudsning (sekunder) | `debounce_s` | a shorter return to inactive does not reset the clock (default 10) |
-| Gäller i lägena | `active_modes` | keys of the installation's modes, e.g. `away, vacation`; empty = always |
-| Vilket läge | `mode_name` | only with several modes, default `default` |
+| Det här bevakas | `watch` | rows of `watch_function`, `watch_label`, `watch_sound`, `watch_active_value` (see above) |
 | Steg | `steps` | one row per step, see below |
-| Standardljud | `sound_default` | sound file when the function has no `toolong.sound` |
-| Högtalare | `player_device` | only when there are several speakers (devices of type `audio`) |
+| Gäller i lägena | `active_modes` | modes as people see them (`Borta, Semester`) or their keys (`away, vacation`); empty = always |
 
 A step:
 
 | Setting | Key | Meaning |
 |---|---|---|
-| Efter (minuter från start) | `step_after_min` | minutes from time zero |
-| Spela ljud | `step_sound` | play the function's sound on the speaker |
+| Efter (minuter) | `step_after_min` | minutes from time zero, 0 = at once |
 | Aviseringar | `step_outputs` | notification outputs, called in parallel; e-mail first, SMS when urgent |
-| Mottagargrupp | `step_recipient_group` | group from the Recipients app, e.g. `staff` |
-| Styrning: topic / värde | `step_control_topic`, `step_control_value` | a command sent once, e.g. `set/obj/knx/0/1/40` = `1` |
-| Styrning: kontroll mot | `step_verify_topic`, `step_verify_s` | the step's sound and notification wait until this topic shows the value, at most `step_verify_s` |
-| Upprepa var (minuter) / Högst antal | `step_repeat_every_min`, `step_max_repeats` | repeat sound and notification, never the command |
+| Till vilka | `step_recipient_group` | group from the Recipients app, as written there (`Hemtjänst natt` = `hemtjanst_natt`) |
+| Spela ljud | `step_sound` | play the function's sound on the speaker |
+| Upprepa var (minuter) / Högst antal | `step_repeat_every_min`, `step_max_repeats` | repeat sound and notification, never a command |
 
-## Payload
+*Avancerat*:
 
-| Field | Example |
-|---|---|
-| `label` | `kylskåpsdörren` (`toolong.label`, otherwise the function's name) |
-| `function_id`, `instance`, `group` | `784102`, `Kyl och frys`, `fridge-freezer` |
-| `step`, `steps` | `2`, `2` |
-| `minutes`, `seconds`, `since` | minutes and seconds since time zero, time zero as UNIX time |
-| `repeat` | 0 the first time, then 1, 2 ... |
-| `control` | `{"topic":"set/obj/knx/0/1/40","value":1,"confirmed":true}` on steps with a command |
-| `active`, `active_count` | every active function of the instance: `[{"label":...,"minutes":...}]` |
-| `recipients_email`, `recipients_sms` | the step's group from the Recipients app |
-| `late` | `true` when the notification waited more than an hour (no internet) |
-| `mode` | the installation's mode key when the step ran, e.g. `away` |
+| Setting | Key | Meaning |
+|---|---|---|
+| Styrningar | `controls` | rows of `control_after_min`, `control_topic`, `control_value`, `control_verify_topic`, `control_verify_s`: a command sent once, e.g. `set/obj/knx/0/1/40` = `1`; a step at the same time waits until the check topic shows the value |
+| Standardljud | `sound_default` | sound file when the function has no sound of its own |
+| Högtalare | `player_device` | only when there are several speakers (devices of type `audio`) |
+| Gruppnamn | `group` | the link to the functions; empty = `toolong-<instance id>` |
+| Värde som betyder aktiv (alla) | `active_value` | empty: the function's `state_open` / `state_on` / `state_true`, otherwise `1` |
+| Avstudsning (sekunder) | `debounce_s` | a shorter return to inactive does not reset the clock (default 10) |
+| Vilket läge | `mode_name` | only with several modes, default `default` |
 
-Template examples:
-
-```
-{{.installation.Name}}: {{.payload.label}} har varit öppen i {{.payload.minutes}} min.
-```
-
-and as the recipient of an e-mail output: `{{.payload.recipients_email}}`.
-
-## Sound
-
-Sounds are played only when the installation has a device of type `audio` (ha-iotopen 0.9.0 gives a mirrored
-speaker with *Play* that type). The app sends the file name to that device's function with `ha.part = play`.
-Without a speaker, sounds are skipped and logged once; notifications and commands go on as usual.
+Commands in a step (`step_control_topic` and so on, before 0.4) still work.
 
 ## Behaviour
 
@@ -105,7 +108,7 @@ lua5.3 tests/test_app.lua
 
 The tests run `app.lua` in a simulated edge client with a simulated clock, so a whole timeline runs in
 milliseconds: steps from time zero, the valve and its check, debounce, two clocks, repeats, restart, offline
-queue, speaker and recipients. All names, addresses and numbers in the tests are made up.
+queue, speaker and recipients, and the form and the metadata kept in step both ways. All names, addresses and numbers in the tests are made up.
 
 ## License
 
