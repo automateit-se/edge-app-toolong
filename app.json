@@ -5,21 +5,113 @@
     "name": {
       "type": "text",
       "name": "Namn",
-      "description": "Namnet på bevakningen, skickas med i aviseringarna. Till exempel Vatten i köket.",
+      "description": "Vad bevakningen heter, till exempel Vatten i köket. Står med i aviseringarna.",
       "required": true
+    },
+    "watch": {
+      "type": "repeat",
+      "name": "Det här bevakas",
+      "description": "En rad per sak som inte får vara aktiv för länge. Varje sak har en egen klocka som startar när den blir aktiv.",
+      "input_fields": [
+        "watch_function",
+        "watch_label",
+        "watch_sound",
+        "watch_active_value"
+      ],
+      "min": 0,
+      "max": 50
+    },
+    "watch_function": {
+      "type": "single_function_selector",
+      "name": "Givare",
+      "description": "Funktionen som visar om saken är aktiv, till exempel en dörrkontakt eller en vattenventil.",
+      "required": true
+    },
+    "watch_label": {
+      "type": "text",
+      "name": "Namn i aviseringen",
+      "description": "Hur saken skrivs i texten, till exempel kylskåpsdörren. Tomt: funktionens namn."
+    },
+    "watch_sound": {
+      "type": "text",
+      "name": "Eget ljud",
+      "description": "Valfritt. Ljudfil för just den här saken, till exempel iotopen/kylskap.mp3. Tomt: standardljudet."
+    },
+    "watch_active_value": {
+      "type": "text",
+      "name": "Värde som betyder aktiv",
+      "description": "Oftast tomt. Bara om givaren använder ett annat värde än det vanliga, till exempel 255."
+    },
+    "steps": {
+      "type": "repeat",
+      "name": "Steg",
+      "description": "Vad som händer och när. Alla tider räknas från att saken blev aktiv, aldrig från föregående steg.",
+      "input_fields": [
+        "step_after_min",
+        "step_outputs",
+        "step_recipient_group",
+        "step_sound",
+        "step_repeat_every_min",
+        "step_max_repeats"
+      ],
+      "min": 1,
+      "max": 10
+    },
+    "step_after_min": {
+      "type": "number",
+      "name": "Efter (minuter)",
+      "description": "Minuter från att saken blev aktiv. 0 = direkt.",
+      "default": 10,
+      "min": 0,
+      "max": 10080,
+      "required": true
+    },
+    "step_outputs": {
+      "type": "multi_notification_output_selector",
+      "name": "Aviseringar",
+      "description": "En eller flera aviseringar som skickas samtidigt. Välj i första hand e-post; SMS kostar mer och passar det som är brådskande."
+    },
+    "step_recipient_group": {
+      "type": "text",
+      "name": "Till vilka",
+      "description": "En grupp från appen Mottagare, skriven som där, till exempel Personal eller Hemtjänst natt."
+    },
+    "step_sound": {
+      "type": "toggle",
+      "name": "Spela ljud",
+      "description": "På installationens högtalare, om det finns en.",
+      "default": false
+    },
+    "step_repeat_every_min": {
+      "type": "number",
+      "name": "Upprepa var (minuter)",
+      "description": "Upprepar ljud och avisering. 0 = ingen upprepning.",
+      "default": 0,
+      "min": 0,
+      "max": 1440
+    },
+    "step_max_repeats": {
+      "type": "number",
+      "name": "Högst antal upprepningar",
+      "description": "0 = så länge saken är aktiv.",
+      "default": 0,
+      "min": 0,
+      "max": 1000
+    },
+    "active_modes": {
+      "type": "text",
+      "name": "Gäller i lägena",
+      "description": "Valfritt. Lägen från appen Läge, skrivna som de visas, till exempel Borta, Semester. I andra lägen väntar stegen. Tomt: gäller alltid."
     },
     "group": {
       "type": "text",
-      "name": "Grupp (tagg)",
-      "description": "Appen bevakar alla funktioner som har metadata toolong.group med det här värdet. En ny givare läggs till genom att tagga den. Små bokstäver, siffror, _ och -, till exempel kitchen-water.",
-      "required": true,
-      "validator": "^[a-z0-9_-]+$",
-      "on_error": "Små bokstäver, siffror, _ och -"
+      "name": "Gruppnamn",
+      "description": "Kopplingen till givarna i IoT Open (metadata toolong.group). Tomt: ett eget namn för den här installationen av appen. Fyll bara i om givare redan är taggade med ett namn."
     },
     "active_value": {
       "type": "text",
-      "name": "Värde som betyder aktiv",
-      "description": "Tomt: funktionens state_open, state_on eller state_true, annars 1. En funktion kan ha ett eget värde i toolong.active_value."
+      "name": "Värde som betyder aktiv (alla)",
+      "description": "Tomt: givarens state_open, state_on eller state_true, annars 1."
     },
     "debounce_s": {
       "type": "number",
@@ -30,109 +122,64 @@
       "max": 3600,
       "required": true
     },
-    "active_modes": {
-      "type": "text",
-      "name": "Gäller i lägena",
-      "description": "Nycklar för installationens lägen (appen Läge), kommaseparerade, till exempel away, vacation. I andra lägen väntar stegen, men klockan går. Tomt: gäller alltid.",
-      "validator": "^$|^[a-z0-9_-]+([ ]*,[ ]*[a-z0-9_-]+)*$",
-      "on_error": "Nycklar med små bokstäver, separerade med komma"
-    },
     "mode_name": {
       "type": "text",
       "name": "Vilket läge",
-      "description": "Bara om installationen har flera lägen (appen Läges tekniska benämning).",
+      "description": "Bara om installationen har flera lägen: appen Läges tekniska benämning.",
       "default": "default",
       "validator": "^[a-z0-9_-]+$",
       "on_error": "Små bokstäver, siffror, _ och -"
     },
-    "steps": {
+    "controls": {
       "type": "repeat",
-      "name": "Steg",
-      "description": "Varje steg sker en gång per förlopp. Alla tider räknas från start, när funktionen blev aktiv, aldrig från föregående steg.",
+      "name": "Styrningar",
+      "description": "Valfritt. Ett kommando vid en viss tid, till exempel att stänga vattnet efter 20 minuter. Ett steg vid samma tid väntar på kontrollen och berättar om det lyckades. Appen återställer aldrig en styrning.",
       "input_fields": [
-        "step_after_min",
-        "step_sound",
-        "step_outputs",
-        "step_recipient_group",
-        "step_control_topic",
-        "step_control_value",
-        "step_verify_topic",
-        "step_verify_s",
-        "step_repeat_every_min",
-        "step_max_repeats"
+        "control_after_min",
+        "control_topic",
+        "control_value",
+        "control_verify_topic",
+        "control_verify_s"
       ],
-      "min": 1,
+      "min": 0,
       "max": 10
     },
-    "step_after_min": {
+    "control_after_min": {
       "type": "number",
-      "name": "Efter (minuter från start)",
-      "description": "Räknas från att funktionen blev aktiv, inte från föregående steg.",
-      "default": 10,
-      "min": 0.1,
+      "name": "Efter (minuter)",
+      "default": 20,
+      "min": 0,
       "max": 10080,
       "required": true
     },
-    "step_sound": {
-      "type": "toggle",
-      "name": "Spela ljud",
-      "description": "Spelas på installationens högtalare (en enhet av typen audio). Ljudfilen tas från funktionens toolong.sound, annars standardljudet nedan.",
-      "default": false
-    },
-    "step_outputs": {
-      "type": "multi_notification_output_selector",
-      "name": "Aviseringar",
-      "description": "En eller flera notification outputs som anropas parallellt. Välj i första hand e-post; SMS kostar mer och passar det som är brådskande."
-    },
-    "step_recipient_group": {
+    "control_topic": {
       "type": "text",
-      "name": "Mottagargrupp",
-      "description": "Grupp från appen Mottagare, till exempel staff. Listorna skickas med som recipients_email och recipients_sms, som outputen använder med {{.payload.recipients_email}}.",
-      "validator": "^$|^[a-z0-9_-]+$",
-      "on_error": "Små bokstäver, siffror, _ och -"
+      "name": "Topic",
+      "description": "Till exempel set/obj/knx/0/1/40.",
+      "required": true
     },
-    "step_control_topic": {
+    "control_value": {
       "type": "text",
-      "name": "Styrning: topic",
-      "description": "Valfritt. Skickas en gång när steget nås, till exempel set/obj/knx/0/1/40 för att stänga vattnet. Appen återställer aldrig en styrning."
+      "name": "Värde",
+      "description": "Till exempel 1.",
+      "required": true
     },
-    "step_control_value": {
+    "control_verify_topic": {
       "type": "text",
-      "name": "Styrning: värde",
-      "description": "Värdet som skickas, till exempel 1."
+      "name": "Kontroll mot",
+      "description": "Valfritt. Topic som ska visa det nya värdet, till exempel obj/knx/0/2/40."
     },
-    "step_verify_topic": {
-      "type": "text",
-      "name": "Styrning: kontroll mot",
-      "description": "Valfritt. Topic som ska visa det nya värdet, till exempel statusadressen obj/knx/0/2/40. Stegets ljud och avisering väntar på kontrollen och berättar om styrningen lyckades."
-    },
-    "step_verify_s": {
+    "control_verify_s": {
       "type": "number",
-      "name": "Styrning: vänta på kontroll (sekunder)",
+      "name": "Vänta på kontroll (sekunder)",
       "default": 30,
       "min": 1,
       "max": 600
     },
-    "step_repeat_every_min": {
-      "type": "number",
-      "name": "Upprepa var (minuter)",
-      "description": "Upprepar ljud och avisering, aldrig styrningen. 0 = ingen upprepning.",
-      "default": 0,
-      "min": 0,
-      "max": 1440
-    },
-    "step_max_repeats": {
-      "type": "number",
-      "name": "Högst antal upprepningar",
-      "description": "0 = tills funktionen inte längre är aktiv.",
-      "default": 0,
-      "min": 0,
-      "max": 1000
-    },
     "sound_default": {
       "type": "text",
       "name": "Standardljud",
-      "description": "Ljudfil i Home Assistants mediamapp, till exempel iotopen/kitchen-water-running.mp3. Används när funktionen saknar toolong.sound."
+      "description": "Ljudfil i Home Assistants mediamapp, till exempel iotopen/larm.mp3. Används när en sak saknar eget ljud."
     },
     "player_device": {
       "type": "single_device_selector",
@@ -145,33 +192,28 @@
   },
   "guide": [
     {
-      "id": "stage_1",
-      "title": "Vad som bevakas",
-      "description": "Bevakningen gäller alla funktioner med samma tagg. Varje funktion har en egen klocka som startar när den blir aktiv.",
+      "id": "basic",
+      "title": "Bevakning",
+      "description": "Vad som bevakas och vad som händer när något varit aktivt för länge.",
       "input_fields": [
         "name",
+        "watch",
+        "steps",
+        "active_modes"
+      ]
+    },
+    {
+      "id": "advanced",
+      "title": "Avancerat",
+      "description": "Behövs sällan. För installatören: styrningar, ljud och tekniska inställningar.",
+      "input_fields": [
+        "controls",
+        "sound_default",
+        "player_device",
         "group",
         "active_value",
         "debounce_s",
-        "active_modes",
         "mode_name"
-      ]
-    },
-    {
-      "id": "stage_2",
-      "title": "Steg",
-      "description": "Vad som händer efter hur många minuter från start.",
-      "input_fields": [
-        "steps"
-      ]
-    },
-    {
-      "id": "stage_3",
-      "title": "Ljud",
-      "description": "Ljud spelas bara om installationen har en högtalare (en enhet av typen audio, till exempel från ha-iotopen 0.9.0).",
-      "input_fields": [
-        "sound_default",
-        "player_device"
       ]
     }
   ]
