@@ -28,7 +28,7 @@
 --
 -- Not yet: an acknowledge button. Sounds go straight to the speaker.
 
-local VERSION = "0.4.0"
+local VERSION = "0.4.1"
 local SYNC_WAIT_S = 3 -- time for the retained form to arrive before the first sync
 local TICK_S = 5
 local LATE_S = 3600 -- a notification queued longer than this is marked late; a missed sound this old is skipped
