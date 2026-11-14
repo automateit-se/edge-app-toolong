@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.4.1
+
+- The sound fields can be chosen from the installation's sound files (`suggest: media`, App Management 0.1.16).
+
 ## 0.4.0
 
 - **The form, without tags**: the functions are chosen in the form (*Det här bevakas*: function, name in the

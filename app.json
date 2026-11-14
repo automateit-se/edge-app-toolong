@@ -35,7 +35,8 @@
     "watch_sound": {
       "type": "text",
       "name": "Eget ljud",
-      "description": "Valfritt. Ljudfil för just den här saken, till exempel iotopen/kylskap.mp3. Tomt: standardljudet."
+      "description": "Valfritt. Ljudfil för just den här saken, till exempel iotopen/kylskap.mp3. Tomt: standardljudet.",
+      "suggest": "media"
     },
     "watch_active_value": {
       "type": "text",
@@ -179,7 +180,8 @@
     "sound_default": {
       "type": "text",
       "name": "Standardljud",
-      "description": "Ljudfil i Home Assistants mediamapp, till exempel iotopen/larm.mp3. Används när en sak saknar eget ljud."
+      "description": "Ljudfil i Home Assistants mediamapp, till exempel iotopen/larm.mp3. Används när en sak saknar eget ljud.",
+      "suggest": "media"
     },
     "player_device": {
       "type": "single_device_selector",
